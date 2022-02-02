@@ -43,14 +43,22 @@ export type ScrollPickerProps<T = unknown> = {
   itemHeight?: number;
   /** The height of the container. Fallbacks to containerStyleHeight, then to itemHeight * 5. */
   containerHeight?: number;
+  /** If false, onValueChange is only called when the scroll is no longer being dragged.
+   *
+   * If true, every value change while dragging triggers onValueChange.
+   * @default true */
+  changeValueWhileDragging?: boolean;
 };
 
+/** Limits the index between 0 and data.length - 1. */
 function constrainIndex(index: number | undefined, dataLength: number) {
   return Math.max(0, Math.min(index ?? 0, dataLength - 1));
 }
 
 export default function ScrollPicker<T>({
-  itemHeight = 30, data = [], highlightColor = '#333', ...p
+  itemHeight = 30, data = [], highlightColor = '#333',
+  changeValueWhileDragging = true,
+  ...p
 }: ScrollPickerProps<T>): JSX.Element {
   const [selectedIndex, setSelectedIndex] = useState(constrainIndex(p.selectedIndex, data.length));
   const sView = useRef<ScrollView>(null);
@@ -68,6 +76,11 @@ export default function ScrollPicker<T>({
 
   const initialized = useRef(false);
 
+  const scrollToIndex = useCallback(({ index, animated }: {index: number; animated: boolean}) => {
+    const y = itemHeight * index;
+    sView.current?.scrollTo({ y, animated });
+  }, [itemHeight]);
+
   useEffect(function initialize() {
     if (initialized.current) return;
     initialized.current = true;
@@ -75,13 +88,13 @@ export default function ScrollPicker<T>({
     if (p.selectedIndex !== undefined && p.selectedIndex !== selectedIndex)
       p.onValueChange?.({ value: data[selectedIndex]!, index: selectedIndex });
     // There was a setTimeout(..., 0) here but it would cause a flicker if the picker didn't keep its state and got it from parents.
-    const y = itemHeight * selectedIndex;
-    sView.current?.scrollTo({ y, animated: false });
+    // Actually, the flicker still may happen, but less frequent.
     // setTimeout(() => {
+    scrollToIndex({ index: selectedIndex, animated: false });
     // }, 0);
 
     // return () => { timer && clearTimeout(timer); };
-  }, [initialized, itemHeight, selectedIndex, sView, timer, p.selectedIndex, p, data]);
+  }, [initialized, itemHeight, selectedIndex, sView, timer, p.selectedIndex, p, data, scrollToIndex]);
 
 
   const renderItem = (item: T, index: number) => {
@@ -91,29 +104,34 @@ export default function ScrollPicker<T>({
       : <Text style={[styles.itemText, isSelected && styles.itemTextSelected]}>{item}</Text>;
 
     return (
-      <View style={[styles.itemWrapper, { height: itemHeight }]} key={p.keyExtractor?.({ item, index }) ?? index}>
+      <Pressable
+        style={[styles.itemWrapper, { height: itemHeight }]}
+        key={p.keyExtractor?.({ item, index }) ?? index}
+        onPress={() => scrollToIndex({ index, animated: true })}
+      >
         {element}
-      </View>
+      </Pressable>
     );
   };
 
 
-  const scrollFix = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    let y = 0;
-    const h = itemHeight;
+  const scrollFix = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>, setScrollTo: boolean = true) => {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-    if (e.nativeEvent.contentOffset) // check needed?
-      y = e.nativeEvent.contentOffset.y;
+    const y = e.nativeEvent.contentOffset.y ?? 0; // On original code it checked contentOffset truthyness. Needed?
+    const h = itemHeight;
 
     const _selectedIndex = Math.round(y / h);
 
-    const _y = _selectedIndex * h;
-    if (_y !== y) {
-      // using scrollTo in ios, onMomentumScrollEnd will be invoked
-      if (Platform.OS === 'ios')
-        setIsScrollTo(true);
-      sView.current?.scrollTo({ y: _y });
+    if (setScrollTo) {
+      const _y = _selectedIndex * h;
+      if (_y !== y) {
+        // using scrollTo in ios, onMomentumScrollEnd will be invoked
+        if (Platform.OS === 'ios')
+          setIsScrollTo(true);
+        sView.current?.scrollTo({ y: _y });
+      }
     }
+
     if (selectedIndex === _selectedIndex)
       return;
 
@@ -145,6 +163,9 @@ export default function ScrollPicker<T>({
     if (!isScrollTo && !dragStarted)
       scrollFix(e);
   };
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollFix(e, false);
+  };
 
 
   /** Before the first item and after the last item. Allows vertical centering the firsts and lasts items. */
@@ -169,11 +190,7 @@ export default function ScrollPicker<T>({
 
 
   return (
-
-
-    <View
-      style={[styles.containerStyle, { height: wrapperHeight }, p.containerStyle]}
-    >
+    <View style={[styles.containerStyle, { height: wrapperHeight }, p.containerStyle]}>
       <View style={highlightStyle}/>
       <ScrollView
         ref={sView}
@@ -183,6 +200,9 @@ export default function ScrollPicker<T>({
         onMomentumScrollEnd={onMomentumScrollEnd}
         onScrollBeginDrag={onScrollBeginDrag}
         onScrollEndDrag={onScrollEndDrag}
+        onScroll={changeValueWhileDragging ? onScroll : undefined}
+        /** Get every scroll change. https://stackoverflow.com/questions/29503252/get-current-scroll-position-of-scrollview-in-react-native */
+        scrollEventThrottle={changeValueWhileDragging ? 16 : undefined} // Don't know if it's being good, or bad.
         overScrollMode='never'
       >
         {/* Pressable to fix scroll hardly working https://stackoverflow.com/a/67028240/10247962 */}
